@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Console-X | Reset Admin Password</title>
+  <style>
+    :root{color-scheme:dark;font-family:Arial,Helvetica,sans-serif}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101114;color:#f5f5f5;padding:24px}
+    main{width:min(100%,460px);background:#1b1d22;border:1px solid #343740;border-radius:18px;padding:28px;box-shadow:0 18px 55px #0008}
+    .brand{font-size:13px;letter-spacing:3px;color:#aaa;text-transform:uppercase}
+    h1{margin:8px 0 6px;font-size:26px}.x{color:#ed3434}
+    p{color:#b9bbc2;line-height:1.5;font-size:14px}
+    label{display:block;margin:16px 0 7px;font-size:13px;color:#ddd}
+    input{width:100%;padding:13px;border:1px solid #444954;border-radius:9px;background:#111318;color:#fff;font-size:15px}
+    button{width:100%;padding:13px;margin-top:18px;border:0;border-radius:9px;background:#e52f36;color:white;font-weight:700;font-size:15px;cursor:pointer}
+    button:disabled{opacity:.55;cursor:wait}
+    .small{font-size:12px;color:#92959e}
+    #status{margin-top:16px;padding:12px;border-radius:9px;display:none;white-space:pre-wrap}
+    #status.ok{display:block;background:#123322;color:#a9efc4}
+    #status.err{display:block;background:#3b1c20;color:#ffc0c4}
+    .divider{height:1px;background:#343740;margin:22px 0}
+  </style>
+</head>
+<body>
+<main>
+  <div class="brand">Console-<span class="x">X</span> Game Arena</div>
+  <h1>Reset admin password</h1>
+  <p>Use this page only after opening the password-recovery link sent by Supabase.</p>
+
+  <section id="config">
+    <label for="projectUrl">Supabase Project URL</label>
+    <input id="projectUrl" type="url" placeholder="https://YOUR_PROJECT_REF.supabase.co" autocomplete="url">
+    <label for="anonKey">Supabase publishable key (or legacy anon key)</label>
+    <input id="anonKey" type="password" placeholder="sb_publishable_... or eyJ..." autocomplete="off">
+    <button id="saveConfig" type="button">Save connection settings</button>
+    <p class="small">Use only the publishable/anon key. Never enter a service_role or secret key. Settings are saved in this browser only.</p>
+  </section>
+
+  <div class="divider"></div>
+  <section>
+    <label for="newPassword">New password</label>
+    <input id="newPassword" type="password" minlength="8" placeholder="At least 8 characters" autocomplete="new-password">
+    <label for="confirmPassword">Confirm new password</label>
+    <input id="confirmPassword" type="password" minlength="8" placeholder="Re-enter new password" autocomplete="new-password">
+    <button id="resetBtn" type="button">Update password</button>
+  </section>
+  <div id="status" role="status" aria-live="polite"></div>
+  <p class="small">If the recovery link has expired, request a new password-recovery email from Supabase.</p>
+</main>
+
+<script type="module">
+  import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.0/+esm';
+
+  const $ = (id) => document.getElementById(id);
+  const statusBox = $('status');
+  let supabase = null;
+
+  function show(message, ok=false) {
+    statusBox.textContent = message;
+    statusBox.className = ok ? 'ok' : 'err';
+  }
+  function initClient() {
+    const url = $('projectUrl').value.trim().replace(/\/+$/, '');
+    const key = $('anonKey').value.trim();
+    if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)) {
+      throw new Error('Enter your valid Supabase project URL (https://project-ref.supabase.co).');
+    }
+    if (!key || /service[_-]?role|secret/i.test(key)) {
+      throw new Error('Enter the publishable/anon key only. Do not use a service-role or secret key.');
+    }
+    localStorage.setItem('cx_reset_project_url', url);
+    localStorage.setItem('cx_reset_public_key', key);
+    supabase = createClient(url, key, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+    });
+    return supabase;
+  }
+
+  $('projectUrl').value = localStorage.getItem('cx_reset_project_url') || '';
+  $('anonKey').value = localStorage.getItem('cx_reset_public_key') || '';
+
+  $('saveConfig').addEventListener('click', () => {
+    try {
+      initClient();
+      show('Connection settings saved in this browser. If you arrived from the recovery email, continue below.', true);
+    } catch (e) { show(e.message); }
+  });
+
+  $('resetBtn').addEventListener('click', async () => {
+    const btn = $('resetBtn');
+    btn.disabled = true;
+    try {
+      if (!supabase) initClient();
+      const password = $('newPassword').value;
+      const confirm = $('confirmPassword').value;
+      if (password.length < 8) throw new Error('Choose a password with at least 8 characters.');
+      if (password !== confirm) throw new Error('The two passwords do not match.');
+
+      // Process the recovery token from the URL, if it has not already been processed.
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      if (!sessionData.session) {
+        const hash = new URLSearchParams(location.hash.slice(1));
+        const access_token = hash.get('access_token');
+        const refresh_token = hash.get('refresh_token');
+        if (access_token && refresh_token) {
+          const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+          if (error) throw error;
+        } else {
+          throw new Error('No active recovery session found. Open the latest password-recovery email link in this browser, then try again.');
+        }
+      }
+
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) throw error;
+      await supabase.auth.signOut();
+      history.replaceState(null, '', location.pathname + location.search);
+      $('newPassword').value = '';
+      $('confirmPassword').value = '';
+      show('Your password has been updated. Return to the Console-X billing login and sign in with your new password.', true);
+    } catch (e) {
+      show(e.message || 'Password update failed. Request a fresh recovery email and try again.');
+    } finally {
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
